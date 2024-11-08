@@ -1,12 +1,6 @@
-const { expect } = require("chai");
-const { network } = require("hardhat");
-const keccak256 = require('keccak256');
-const Web3 = require('web3');
-const { ethers } = require("hardhat");
-
+const { network, ethers } = require("hardhat");
 
 async function moveBlocks(number) {
-    console.log("Moving blocks...")
     for (let index = 0; index < number; index++) {
         await network.provider.request({
             method: "evm_mine",
@@ -17,23 +11,18 @@ async function moveBlocks(number) {
 }
 
 async function moveTime(number) {
-    console.log("Moving blocks...")
     await network.provider.send("evm_increaseTime", [number])
-
     console.log(`Moved forward in time ${number} seconds`)
 }
 
-describe("DAO contract", function () {
-    it("Testing Flow", async function () {
+describe("DAO Contract Testing Flow", function () {
+    it("Proposal to Executed Flow", async function () {
+
+        /* ------------ Get Deployer's Address/Identity -------------*/
         const [deployer] = await ethers.getSigners();
 
+        /* ------------ Deployment -------------*/
         const GovToken = await ethers.deployContract("GovToken", [deployer]);
-
-        const balance = await GovToken.balanceOf(deployer.address);
-        console.log(`Deployer's balance: ${balance}`);
-
-        let votes = await GovToken.getVotes(deployer.address);
-        console.log(`Votes for available before deligation: ${votes}`);
 
         const TimeLock = await ethers.deployContract("TimeLock", [0,
             [deployer.address],
@@ -44,18 +33,26 @@ describe("DAO contract", function () {
 
         const MyGovernor = await ethers.deployContract("MyGovernor", [GovToken.target, TimeLock.target]);
 
-        await moveBlocks(10 + 1)
+        console.log("TimeLock: ", TimeLock.target)
+        console.log("Cert: ", Cert.target)
+        console.log("MyGovernor: ", MyGovernor.target)
+        console.log("GovToken: ", GovToken.target)
+
+        /* ------------ Balance and Voting Power -------------*/
+        const balance = await GovToken.balanceOf(deployer.address);
+        console.log(`Deployer's balance: ${balance}`);
+
+        let votes = await GovToken.getVotes(deployer.address);
+        console.log(`Votes for available before deligation: ${votes}`);
 
         const transactionResponse = await GovToken.delegate(deployer)
         await transactionResponse.wait(1)
 
         votes = await GovToken.getVotes(deployer.address);
-        console.log(`Votes for available: ${votes}`);
+        console.log(`Votes for available after deligation: ${votes}`);
 
-        console.log("Timeloc", TimeLock.target)
-        console.log("Cert", Cert.target)
-        console.log("MyGovernor", MyGovernor.target)
-        console.log("Token", GovToken.target)
+
+        /* ------------ Assign Roles to Governer Contract -------------*/
 
         // Get the role identifiers
         const PROPOSER_ROLE = await TimeLock.PROPOSER_ROLE();
@@ -65,16 +62,8 @@ describe("DAO contract", function () {
         await TimeLock.connect(deployer).grantRole(PROPOSER_ROLE, MyGovernor.target);
         await TimeLock.connect(deployer).grantRole(EXECUTOR_ROLE, MyGovernor.target);
 
-        const Certobj = await ethers.getContractAt("Cert", Cert.target);
-
-        const transferCalldata = Certobj.interface.encodeFunctionData("issue", [101, "An", "EDP", "A", "25th June"]);
-
-        // await expect(await MyGovernor.propose(
-        //     [Cert.target],
-        //     [0],
-        //     [transferCalldata],
-        //     "Proposal #1: Give grant to team"
-        //   )).to.emit(MyGovernor, 'ProposalCreated')
+        /* ------------ Proposal -------------*/
+        const transferCalldata = Cert.interface.encodeFunctionData("issue", [101, "An", "EDP", "A", "25th June"]);
 
         proposeTx = await MyGovernor.propose(
             [Cert.target],
@@ -91,11 +80,13 @@ describe("DAO contract", function () {
 
         console.log(`Proposal ID Genrated: ${proposalId}`)
 
+        /* ------------ #0 Pending -------------*/
         let proposalState = await MyGovernor.state(proposalId)
         console.log(`Current Proposal State: ${proposalState}`)
 
         await moveBlocks(100 + 1)
 
+        /* ------------ #1 Active = Voting -------------*/
         proposalState = await MyGovernor.state(proposalId)
         console.log(`Current Proposal State: ${proposalState}`)
 
@@ -107,41 +98,34 @@ describe("DAO contract", function () {
         console.log("For Votes:", proposalVotes.forVotes.toString());
         console.log("Abstain Votes:", proposalVotes.abstainVotes.toString());
 
-        proposalState = await MyGovernor.state(proposalId)
-        console.log(`Current Proposal State: ${proposalState}`)
 
         await moveBlocks(100 + 1)
 
+        /* ------------ #4 Succeeded -------------*/
+        proposalState = await MyGovernor.state(proposalId)
+        console.log(`Current Proposal State: ${proposalState}`)
+
+        /* ------------ #5 Queued -------------*/
         const descriptionHash = ethers.id("Proposal #1: Issue certificate");
 
-        proposalState = await MyGovernor.state(proposalId)
-        console.log(`Current Proposal State: ${proposalState}`)
-
+        
         const queueTx = await MyGovernor.connect(deployer).queue([Cert.target], [0], [transferCalldata], descriptionHash)
         await queueTx.wait(1)
-        await moveTime(36 + 1)
-        await moveBlocks(1)
-
-
-        let filter1 = MyGovernor.filters.ProposalCreated();
-
-        let events1 = await MyGovernor.queryFilter(filter1, 0, queueTx.blockNumber);
-
-        let propslssl = events1[0].args.proposalId;
-        let propslssld = events1[0].args.description;
-        
-
-        console.log("All:", propslssl, propslssld)
 
         proposalState = await MyGovernor.state(proposalId)
         console.log(`Current Proposal State: ${proposalState}`)
 
+        await moveTime(40)
+        await moveBlocks(1)
+
+        /* ------------ #7 Execute -------------*/        
         const executeTx = await MyGovernor.connect(deployer).execute([Cert.target], [0], [transferCalldata], descriptionHash)
         await executeTx.wait(1)
 
         proposalState = await MyGovernor.state(proposalId)
         console.log(`Current Proposal State: ${proposalState}`)
-
-        console.log(await Certobj.Certificates(101))
+        
+        /* ------------ Verify -------------*/
+        console.log(await Cert.Certificates(101))
     });
 });
